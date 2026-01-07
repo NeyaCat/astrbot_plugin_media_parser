@@ -122,18 +122,65 @@ class VideoParserPlugin(Star):
 
         message_text = event.message_str
         try:
+            # 尝试从QQ小程序卡片中提取真实链接（兼容多种数据格式）
             messages = event.get_messages()
             if messages and len(messages) > 0:
-                message_data = json.loads(messages[0].data)
-                meta = message_data.get("meta") or {}
-                detail_1 = meta.get("detail_1") or {}
-                curl_link = detail_1.get("qqdocurl")
-                if not curl_link:
-                    news = meta.get("news") or {}
-                    curl_link = news.get("jumpUrl")
-                if curl_link:
-                    message_text = curl_link
-        except (AttributeError, KeyError, json.JSONDecodeError, IndexError, TypeError):
+                msg_data = messages[0].data
+                message_data = None
+                
+                # 情况1: msg_data 是字典
+                if isinstance(msg_data, dict):
+                    # 情况1.1: 字典中有 'data' 字段，且是JSON字符串（新版本格式）
+                    if "data" in msg_data:
+                        json_str = msg_data.get("data")
+                        if isinstance(json_str, str):
+                            try:
+                                message_data = json.loads(json_str)
+                            except (json.JSONDecodeError, TypeError):
+                                # JSON解析失败，尝试直接使用原始字典
+                                message_data = msg_data
+                        elif isinstance(json_str, dict):
+                            # 'data' 字段本身就是字典
+                            message_data = json_str
+                    else:
+                        # 情况1.2: 字典中没有 'data' 字段，说明本身就是解析后的数据（旧版本格式）
+                        message_data = msg_data
+                
+                # 情况2: msg_data 是字符串，直接解析（旧版本格式）
+                elif isinstance(msg_data, str):
+                    try:
+                        message_data = json.loads(msg_data)
+                    except (json.JSONDecodeError, TypeError):
+                        # JSON解析失败，跳过
+                        message_data = None
+                
+                # 如果成功获取到解析后的数据，尝试提取链接
+                if message_data and isinstance(message_data, dict):
+                    # 从解析后的数据中提取链接
+                    meta = message_data.get("meta") or {}
+                    if isinstance(meta, dict):
+                        # 方式1: 尝试从 detail_1.qqdocurl 提取（适用于B站、微博等）
+                        detail_1 = meta.get("detail_1") or {}
+                        if isinstance(detail_1, dict):
+                            curl_link = detail_1.get("qqdocurl")
+                            if curl_link and isinstance(curl_link, str):
+                                message_text = curl_link
+                                if self.debug_mode:
+                                    self.logger.debug(f"从QQ小程序卡片(detail_1.qqdocurl)中提取到链接: {curl_link}")
+                        
+                        # 方式2: 如果方式1没找到，尝试从 news.jumpUrl 提取（适用于小红书、小黑盒等）
+                        if message_text == event.message_str:
+                            news = meta.get("news") or {}
+                            if isinstance(news, dict):
+                                curl_link = news.get("jumpUrl")
+                                if curl_link and isinstance(curl_link, str):
+                                    message_text = curl_link
+                                    if self.debug_mode:
+                                        self.logger.debug(f"从QQ小程序卡片(news.jumpUrl)中提取到链接: {curl_link}")
+        except (AttributeError, KeyError, json.JSONDecodeError, IndexError, TypeError) as e:
+            # 提取失败，使用原始消息文本
+            if self.debug_mode:
+                self.logger.debug(f"提取QQ小程序卡片链接时出现异常: {type(e).__name__}: {e}")
             pass
         
         if not self._should_parse(message_text):
